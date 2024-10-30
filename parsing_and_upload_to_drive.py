@@ -1,5 +1,5 @@
 import os, sys, shutil, math
-#os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(os.path.dirname(sys.argv[0]), 'cacert.pem')
+os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(os.path.dirname(sys.argv[0]), 'cacert.pem')
 import pandas as pd
 import requests
 import xlsxwriter

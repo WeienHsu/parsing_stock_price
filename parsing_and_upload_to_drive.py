@@ -66,16 +66,42 @@ def downloadOTC(date):
 
 def downloadByCSVUrl(url):
     print(url)
-    response = requests.get(url)
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://www.twse.com.tw/',
+        'Connection': 'keep-alive'
+    }
+
     data = []
-    if response.status_code == 200:
-        csv_content = response.content.decode('utf-8')
-        df = pd.read_csv(StringIO(csv_content))
-        for index, row in df.iterrows():
-            sym,stock_name,price,_ = row.to_list()
-            data.append([sym,stock_name,price,math.nan])
-    else:
-        print(f'Download failed..., {response.status_code}')
+    try:
+        session = requests.Session()
+        response = session.get(url, headers=headers, timeout=30)
+        response.encoding = 'utf-8'
+        if response.status_code == 200:
+            csv_content = response.content.decode('utf-8')
+            df = pd.read_csv(StringIO(csv_content))
+            for index, row in df.iterrows():
+                sym,stock_name,price,_ = row.to_list()
+                data.append([sym,stock_name,price,math.nan])
+        else:
+            print(f'Download failed..., {response.status_code}')
+    except requests.exceptions.RequestException as e:
+        raise requests.exceptions.RequestException(f'{e}')
+
+    #response = requests.get(url, headers=headers)
+    #data = []
+    #if response.status_code == 200:
+    #    csv_content = response.content.decode('utf-8')
+    #    df = pd.read_csv(StringIO(csv_content))
+    #    for index, row in df.iterrows():
+    #        sym,stock_name,price,_ = row.to_list()
+    #        data.append([sym,stock_name,price,math.nan])
+    #else:
+    #    print(f'Download failed..., {response.status_code}')
+    print(f'{url} ....ok!')
     return data
 
 def downloadByCSVUrl_tpex(url):
@@ -95,6 +121,7 @@ def downloadByCSVUrl_tpex(url):
     if response.status_code == 200:
         df = pd.read_csv(StringIO(response.text), sep=',', quotechar='"', skipinitialspace=True, skiprows=2)
         if len(df) <= 2:
+            print(f'{url} ..... Not found any data')
             return data
         for index, row in df.iterrows():
             res = row.to_list()
@@ -108,6 +135,7 @@ def downloadByCSVUrl_tpex(url):
             data.append([sym,str(stock_name).strip(),price,math.nan])
     else:
         print(f'Download failed..., {response.status_code}')
+    print(f'{url} ....ok!')
     return data
 
 def downloadHistock(url="https://histock.tw/stock/rank.aspx?m=0&d=0&p=all"):
@@ -117,6 +145,7 @@ def downloadHistock(url="https://histock.tw/stock/rank.aspx?m=0&d=0&p=all"):
     table = soup.find('table', attrs={'class':'gvTB'})
     rows = table.find_all('tr')
     title = [[x.text for x in rows[0].find_all('div', class_="")][y] for y in [0,1,2,11]]
+    print(f'{url} ....ok!')
     return rows, title
 
 #############################################
@@ -147,23 +176,57 @@ def authenticate(cred_name):
 
     return creds
 
-def upload_to_drive_as_google_sheet(file_path):
+
+def upload_to_drive_as_google_sheet(file_path, file_id=None):
     creds = authenticate(cred_name='client_secret_26780629440-mevsthtu7l2olgs05jb0jkpk8jg7r38p.apps.googleusercontent.com')
     service = build('drive', 'v3', credentials=creds)
 
-    # setup file is google sheet format
-    mydate = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_metadata = {
-        'name': os.path.basename(file_path).replace('.xlsx', f'_{mydate}'),
-        'parents': [folder_id],
-        'mimeType': 'application/vnd.google-apps.spreadsheet'
-    }
-    
-    # upload xlsx and convert to google sheet
-    media = MediaFileUpload(file_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"File ID: {file.get('id')} uploaded and converted to Google Sheets successfully.")
-    print(f"Upload filename: {os.path.basename(file_path).replace('.xlsx', f'_{mydate}')}")
+    # 設定檔案基本名稱（不包含日期時間戳）
+    base_filename = os.path.basename(file_path).replace('.xlsx', '')
+    if file_id:
+        # 如果提供了file_id，則更新現有檔案
+        media = MediaFileUpload(file_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        file = service.files().update(
+            fileId=file_id,
+            media_body=media,
+            fields='id'
+        ).execute()
+        print(f"File ID: {file.get('id')} updated successfully.")
+        print(f"Updated filename: {base_filename}")
+        return file.get('id')
+    else:
+        # 如果沒有提供file_id，則檢查是否存在同名檔案
+        query = f"name='{base_filename}' and '{folder_id}' in parents and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+        results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        items = results.get('files', [])
+        if items:
+            # 如果找到同名檔案，則更新它
+            file_id = items[0]['id']
+            media = MediaFileUpload(file_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            file = service.files().update(
+                fileId=file_id,
+                media_body=media,
+                fields='id'
+            ).execute()
+            print(f"File ID: {file.get('id')} updated successfully.")
+            print(f"Updated filename: {base_filename}")
+            return file.get('id')
+        else:
+            # 如果沒有找到同名檔案，則創建新檔案
+            file_metadata = {
+                'name': base_filename,
+                'parents': [folder_id],
+                'mimeType': 'application/vnd.google-apps.spreadsheet'
+            }
+            media = MediaFileUpload(file_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            file = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            print(f"File ID: {file.get('id')} uploaded and converted to Google Sheets successfully.")
+            print(f"Upload filename: {base_filename}")
+            return file.get('id')
 
 if __name__ == '__main__':
     exec_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

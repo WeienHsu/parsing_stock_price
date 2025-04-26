@@ -2,7 +2,6 @@ import os, sys, shutil, math
 os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(os.path.dirname(sys.argv[0]), 'cacert.pem')
 import pandas as pd
 import requests
-from dotenv import load_dotenv
 from io import StringIO
 from bs4 import BeautifulSoup
 from bs4.dammit import EncodingDetector
@@ -14,22 +13,25 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-def load_env_variables(env_path='.env'):
+def load_env_variables(env_filename='.env', base_path='./'):
     env_vars = {
-        'FOLDER_ID': None, 'CRED_NAME': None, 'FILE_ID': None, 'CP_EXCEL_TO':None}
+        'FOLDER_ID': '', 'CRED_NAME': '', 'FILE_ID': '', 'CP_EXCEL_TO': ''
+    }
+
+    env_path = os.path.join(base_path, env_filename)
+    print(f"get .env from current path: {env_path}")
     try:
         with open(env_path, 'r') as file:
             for line in file:
                 line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if '=' in line:
+                if line and not line.startswith('#') and '=' in line:
                     key, value = line.split('=', 1)
                     env_vars[key] = value.strip()
     except FileNotFoundError:
-        print(f"[WARNING] .env configuration file not found. Upload process has been skipped.")
+        print(f"[WARNING] .env file not found at {env_path}. Upload process skipped.")
 
     return env_vars
+
 
 def isfloat(num):
     try:
@@ -287,9 +289,10 @@ if __name__ == '__main__':
         creater_success = True
 
     # get parameter for using drive api if it's exist
-    params = load_env_variables()
+    base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    params = load_env_variables(base_path=base_path)
     folder_id = params['FOLDER_ID']
-    cred_name = params['CRED_NAME']
+    cred_name = os.path.join(base_path, params['CRED_NAME'])
     if creater_success and folder_id and cred_name:
         upload_to_drive_as_google_sheet(
             xlsx_path, cred_name=cred_name, folder_id=folder_id)
@@ -297,7 +300,7 @@ if __name__ == '__main__':
         print(f"Not upload to google drive...")
 
     cp_path = params['CP_EXCEL_TO']
-    if cp_path:
+    if cp_path and os.path.exists(cp_path):
         try:
             shutil.copy2(xlsx_path, cp_path)
             print(f"Copy to {cp_path}, Done!")

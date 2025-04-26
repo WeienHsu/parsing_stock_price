@@ -2,7 +2,7 @@ import os, sys, shutil, math
 os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(os.path.dirname(sys.argv[0]), 'cacert.pem')
 import pandas as pd
 import requests
-import xlsxwriter
+from dotenv import load_dotenv
 from io import StringIO
 from bs4 import BeautifulSoup
 from bs4.dammit import EncodingDetector
@@ -14,6 +14,22 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+def load_env_variables(env_path='.env'):
+    env_vars = {
+        'FOLDER_ID': None, 'CRED_NAME': None, 'FILE_ID': None, 'CP_EXCEL_TO':None}
+    try:
+        with open(env_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    env_vars[key] = value.strip()
+    except FileNotFoundError:
+        print(f"[WARNING] .env configuration file not found. Upload process has been skipped.")
+
+    return env_vars
 
 def isfloat(num):
     try:
@@ -84,7 +100,7 @@ def downloadByCSVUrl(url):
             csv_content = response.content.decode('utf-8')
             df = pd.read_csv(StringIO(csv_content))
             for index, row in df.iterrows():
-                sym,stock_name,price,_ = row.to_list()
+                _, sym, stock_name, price, _ = row.to_list()
                 data.append([sym,stock_name,price,math.nan])
         else:
             print(f'Download failed..., {response.status_code}')
@@ -165,11 +181,9 @@ def authenticate(cred_name):
             print(creds, creds.expired, creds.refresh_token)
             creds.refresh(Request())
         else:
-            print("B")
-            #flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
             flow = InstalledAppFlow.from_client_secrets_file(f'{cred_name}.json', SCOPES)
             creds = flow.run_local_server(port=0)
-        
+
         # save certificate
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
@@ -177,8 +191,8 @@ def authenticate(cred_name):
     return creds
 
 
-def upload_to_drive_as_google_sheet(file_path, file_id=None):
-    creds = authenticate(cred_name='client_secret_26780629440-mevsthtu7l2olgs05jb0jkpk8jg7r38p.apps.googleusercontent.com')
+def upload_to_drive_as_google_sheet(file_path, cred_name, folder_id, file_id=None):
+    creds = authenticate(cred_name=cred_name)
     service = build('drive', 'v3', credentials=creds)
 
     # 設定檔案基本名稱（不包含日期時間戳）
@@ -242,14 +256,6 @@ if __name__ == '__main__':
         d = special_str_to_int(item[11])  # 成交量
         data.append([a,b,c,d])
 
-    ## paring OTC stock
-    #resultOTC = downloadOTC(date.today())
-    #for item in resultOTC:
-    #    a = str(item[0])
-    #    b = str(item[1])
-    #    c = float(item[2]) if isfloat(item[2]) else '----'
-    #    d = int(item[7])/1000
-    #    data.append([a,b,c,d])
     resultOTC = downloadByCSVUrl(url='https://www.twse.com.tw/exchangeReport/STOCK_DAY_AVG_ALL?response=open_data')
     data.extend(resultOTC)
 
@@ -280,16 +286,20 @@ if __name__ == '__main__':
         worksheet.set_column(2, 2, None, format1)  # (from col, to col, cell width, FORMAT)
         creater_success = True
 
-    if creater_success:
-        folder_id = '1A6tafYN17dNqV6lkmVG-qBgmCZBAt-U5'
-        #excel_file_path = '股價N.xlsx'
-        upload_to_drive_as_google_sheet(xlsx_path)
+    # get parameter for using drive api if it's exist
+    params = load_env_variables()
+    folder_id = params['FOLDER_ID']
+    cred_name = params['CRED_NAME']
+    if creater_success and folder_id and cred_name:
+        upload_to_drive_as_google_sheet(
+            xlsx_path, cred_name=cred_name, folder_id=folder_id)
     else:
         print(f"Not upload to google drive...")
 
-    cp_path = "./cp_target"
-    try:
-        shutil.copy2(xlsx_path, cp_path)
-        print(f"copy to {cp_path}, Done!")
-    except:
-        print(f"Copy file failed!")
+    cp_path = params['CP_EXCEL_TO']
+    if cp_path:
+        try:
+            shutil.copy2(xlsx_path, cp_path)
+            print(f"Copy to {cp_path}, Done!")
+        except:
+            print(f"Copy file failed!")

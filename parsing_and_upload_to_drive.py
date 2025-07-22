@@ -134,7 +134,10 @@ def downloadByCSVUrl_tpex(url):
     url = url.format(formatted_date)
 
     print(url)
-    response = requests.get(url)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
+    }
+    response = requests.get(url, headers=headers)
     data = []
     if response.status_code == 200:
         df = pd.read_csv(StringIO(response.text), sep=',', quotechar='"', skipinitialspace=True, skiprows=2)

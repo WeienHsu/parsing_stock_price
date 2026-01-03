@@ -1,4 +1,5 @@
 import os, sys, shutil, math
+import urllib3
 os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(os.path.dirname(sys.argv[0]), 'cacert.pem')
 import pandas as pd
 import requests
@@ -95,8 +96,9 @@ def downloadByCSVUrl(url):
 
     data = []
     try:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         session = requests.Session()
-        response = session.get(url, headers=headers, timeout=30)
+        response = session.get(url, headers=headers, timeout=30, verify=False)
         response.encoding = 'utf-8'
         if response.status_code == 200:
             csv_content = response.content.decode('utf-8')
@@ -109,16 +111,6 @@ def downloadByCSVUrl(url):
     except requests.exceptions.RequestException as e:
         raise requests.exceptions.RequestException(f'{e}')
 
-    #response = requests.get(url, headers=headers)
-    #data = []
-    #if response.status_code == 200:
-    #    csv_content = response.content.decode('utf-8')
-    #    df = pd.read_csv(StringIO(csv_content))
-    #    for index, row in df.iterrows():
-    #        sym,stock_name,price,_ = row.to_list()
-    #        data.append([sym,stock_name,price,math.nan])
-    #else:
-    #    print(f'Download failed..., {response.status_code}')
     print(f'{url} ....ok!')
     return data
 
@@ -137,7 +129,10 @@ def downloadByCSVUrl_tpex(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
     }
-    response = requests.get(url, headers=headers)
+    # response = requests.get(url, headers=headers)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    session = requests.Session()
+    response = session.get(url, headers=headers, timeout=30, verify=False)
     data = []
     if response.status_code == 200:
         df = pd.read_csv(StringIO(response.text), sep=',', quotechar='"', skipinitialspace=True, skiprows=2)
@@ -165,7 +160,7 @@ def downloadHistock(url="https://histock.tw/stock/rank.aspx?m=0&d=0&p=all"):
     soup = get_soup(url)
     table = soup.find('table', attrs={'class':'gvTB'})
     rows = table.find_all('tr')
-    title = [[x.text for x in rows[0].find_all('div', class_="")][y] for y in [0,1,2,11]]
+    title = [[x.text for x in rows[0].find_all('div', class_=None)][y] for y in [0,1,2,11]]
     print(f'{url} ....ok!')
     return rows, title
 

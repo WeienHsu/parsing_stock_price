@@ -6,6 +6,7 @@ CRED_NAME=client_secret_...
 FOLDER_ID=1A6t....
 FILE_ID=''  # Not necessary
 CP_EXCEL_TO='' # Not necessary
+CUSTOM_US_STOCKS=GBTC,GLD,ITA,SOXX,TSM,VOO,QQQ,... # Not necessary
 ```
 
 ### generate .exe file for Windows

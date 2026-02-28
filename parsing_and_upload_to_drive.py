@@ -2,6 +2,7 @@ import os, sys, shutil, math
 import urllib3
 os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(os.path.dirname(sys.argv[0]), 'cacert.pem')
 import pandas as pd
+import yfinance as yf
 import requests
 from io import StringIO
 from bs4 import BeautifulSoup
@@ -16,7 +17,8 @@ from googleapiclient.http import MediaFileUpload
 
 def load_env_variables(env_filename='.env', base_path='./'):
     env_vars = {
-        'FOLDER_ID': '', 'CRED_NAME': '', 'FILE_ID': '', 'CP_EXCEL_TO': ''
+        'FOLDER_ID': '', 'CRED_NAME': '', 'FILE_ID': '', 'CP_EXCEL_TO': '',
+        'FMP_API_KEY': '', 'CUSTOM_US_STOCKS': ''
     }
 
     env_path = os.path.join(base_path, env_filename)
@@ -165,6 +167,146 @@ def downloadHistock(url="https://histock.tw/stock/rank.aspx?m=0&d=0&p=all"):
     return rows, title
 
 #############################################
+#              Parsing american stock       #
+#############################################
+def get_or_create_sp500_list(csv_filename='stock_list.csv'):
+    """
+    檢查本地是否有美股名單 CSV：
+    - 若有，直接讀取並回傳 DataFrame。
+    - 若無，從維基百科爬取 S&P 500 名單，存成本地 CSV，再回傳 DataFrame。
+    """
+    # 判斷執行環境取得正確路徑 (和原本腳本的寫法一致)
+    base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(base_path, csv_filename)
+
+    if os.path.exists(csv_path):
+        print(f"找到本地美股名單: {csv_path}，直接讀取。")
+        try:
+            df = pd.read_csv(csv_path)
+            return df
+        except Exception as e:
+            print(f"讀取本地 CSV 失敗，將重新下載: {e}")
+            # 如果讀取失敗，就繼續往下執行重新下載的邏輯
+            pass
+
+    print("未找到本地美股名單，正在從維基百科下載 S&P 500 最新成分股...")
+    wiki_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    try:
+        # Use requests with User-Agent to avoid 403 Forbidden
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        import requests
+        response = requests.get(wiki_url, headers=headers)
+        response.raise_for_status()
+
+        # read_html 會回傳所有表格，標普 500 名單是第一個 [0]
+        tables = pd.read_html(response.text)
+        sp500_df = tables[0]
+
+        # 我們只需要 股票代號(Symbol) 和 公司名稱(Security)
+        # 為了跟台股的 DataFrame 命名盡量保持一致，我們重命名欄位
+        clean_df = sp500_df[['Symbol', 'Security']].copy()
+        clean_df.columns = ['代號', '名稱']
+
+        # ⚠️ 注意: 稍微修整一下代號，符合 Yahoo Finance 格式。
+        # 維基百科會把 Berkshire 寫成 "BRK.B"，YF 要的是 "BRK-B"
+        clean_df['代號'] = clean_df['代號'].astype(str).str.replace('.', '-')
+
+        # 存成 CSV 檔案 (不保留 index)
+        clean_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print(f"成功下載並建立 {csv_path}，共 {len(clean_df)} 檔股票。")
+
+        return clean_df
+
+    except Exception as e:
+        print(f"下載 S&P 500 清單嚴重失敗: {e}")
+        return pd.DataFrame()
+
+def download_yfinance_from_csv(csv_filename='stock_list.csv'):
+    """
+    1. 呼叫上方函式取得股票清單 (從本地或 Wikipedia)
+    2. 若有設定 .env 的 CUSTOM_US_STOCKS，也一併加入清單
+    3. 使用 yfinance 一次性下載這些股票的今日即時報價
+    """
+    stock_df = get_or_create_sp500_list(csv_filename)
+    data = []
+
+    # 讀取 .env 的自訂美股名單
+    base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    params = load_env_variables(base_path=base_path)
+    custom_stocks_str = params.get('CUSTOM_US_STOCKS', '')
+    custom_stocks_list = [s.strip() for s in custom_stocks_str.split(',')] if custom_stocks_str else []
+
+    if stock_df.empty and not custom_stocks_list:
+        print("無法取得股票清單且無自訂名單，略過美股抓取。")
+        return data
+
+    # 將代號與名稱轉為 dictionary 方便最後查找
+    symbol_map = {}
+    all_symbols = []
+
+    if not stock_df.empty:
+        symbol_map = dict(zip(stock_df['代號'], stock_df['名稱']))
+        all_symbols = stock_df['代號'].tolist()
+
+    # 將自訂名單加入 (若同名會被集合掉，但這裡簡單 list append 即可)
+    for sym in custom_stocks_list:
+        if sym and sym not in all_symbols:
+            all_symbols.append(sym)
+            symbol_map[sym] = sym # 自訂代號沒有中文名稱，就拿代號當名稱顯示
+
+    print(f"開始透過 yfinance 批次抓取 {len(all_symbols)} 檔美股即時報價...")
+
+    try:
+        # yfinance 支援一次傳入多個代號 (以空白分隔)
+        tickers_string = " ".join(all_symbols)
+
+        # threads=True 啟用多執行緒，速度飛快
+        # progress=False 不顯示下載進度條，讓你的終端機乾淨一點
+        hist = yf.download(tickers_string, period="1d", group_by='ticker', threads=True, progress=False)
+
+        if hist.empty:
+            print("yfinance 回傳空資料！(可能遇到 API 阻擋或無網路)")
+            return data
+
+        for sym in all_symbols:
+            try:
+                # 若只有抓一檔股票 (例如清單被你刪到剩一檔)，yfinance 的回傳結構會不一樣
+                if len(all_symbols) == 1:
+                    latest_data = hist.iloc[-1]
+                else:
+                    # 取出該代號的最新一筆資料
+                    if sym in hist.columns.levels[0]:
+                        latest_data = hist[sym].iloc[-1]
+                    else:
+                        continue
+
+                price = float(latest_data['Close'])
+                volume = float(latest_data['Volume'])
+
+                # 過濾明顯異常沒有價格的資料
+                if pd.isna(price) or price <= 0:
+                    continue
+
+                # 從字典拿取正確的公司名稱
+                stock_name = symbol_map.get(sym, sym)
+
+                # 放入你的統一 array 中 [代號, 名稱, 價格, 成交量]
+                # 第三個是價位，第四個是成交量 (你在抓 Histock 的時候是這樣對應的)
+                data.append([sym, stock_name, price, volume])
+
+            except Exception as e:
+                # 即使某一檔出了小問題 (剛好當天暫停交易等)，靜默跳過，不影響其他幾百檔
+                continue
+
+    except Exception as e:
+        print(f"yfinance 批次下載報價發生嚴重錯誤: {e}")
+
+    print(f"美股報價抓取完成！成功取得 {len(data)} 檔報價。")
+    return data
+
+#############################################
 #              upload excel file            #
 #############################################
 def authenticate(cred_name):
@@ -244,9 +386,9 @@ def upload_to_drive_as_google_sheet(file_path, cred_name, folder_id, file_id=Non
 
 if __name__ == '__main__':
     exec_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    data = []
+    data_tw = []
 
-    # Collect data
+    # ======== 1. 收集台股資料 ========
     rows, title = downloadHistock()
     for row in rows[1:]:
         item = [x.text.strip() for x in row.find_all('td')]
@@ -254,36 +396,63 @@ if __name__ == '__main__':
         b = str(item[1])  # 名稱
         c = float(item[2])  # price
         d = special_str_to_int(item[11])  # 成交量
-        data.append([a,b,c,d])
+        data_tw.append([a,b,c,d])
 
     resultOTC = downloadByCSVUrl(url='https://www.twse.com.tw/exchangeReport/STOCK_DAY_AVG_ALL?response=open_data')
-    data.extend(resultOTC)
+    data_tw.extend(resultOTC)
 
     resultTPEX = downloadByCSVUrl_tpex(url="https://www.tpex.org.tw/www/zh-tw/afterTrading/fixPricing?date={}&id=&response=csv")
-    data.extend(resultTPEX)
-    print(f"Total count: {len(data)}")
+    data_tw.extend(resultTPEX)
+    print(f" ==== Taiwan Total count: {len(data_tw)} ====")
 
+    # 將台股轉為 DataFrame 並去重
+    df_tw = pd.DataFrame(data_tw, columns=title)
+    df_tw = df_tw.drop_duplicates(subset='代號').reset_index(drop=True)
+
+    # ======== 2. 收集美股資料 ========
+    # 呼叫美股抓取函式
+    resultUS = download_yfinance_from_csv('stock_list.csv')
+    print(f" ==== US Total count: {len(resultUS)} ====")
+
+    # 將美股轉為 DataFrame
+    title_us = ['美股代號', '美股名稱', '美股價格', '美股成交量']
+    df_us = pd.DataFrame(resultUS, columns=title_us)
+    df_us = df_us.drop_duplicates(subset='美股代號').reset_index(drop=True)
+
+    # ======== 3. 合併台美股 (左右並排) ========
+    # 使用 axis=1 進行水平合併
+    df_combined = pd.concat([df_tw, df_us], axis=1)
+
+    # ======== 4. 存檔到 Excel ========
     creater_success = False
-    df = pd.DataFrame(data, columns=title)
-    df = df.drop_duplicates(subset='代號')
-    #current_directory = os.path.dirname(os.path.abspath(__file__))
-    #current_directory = os.getcwd()
     if getattr(sys, 'frozen', False):  # 如果是打包后的应用
         current_directory = os.path.dirname(sys.executable)  # 获取执行文件的目录
     else:
         current_directory = os.path.dirname(os.path.abspath(__file__))  # 获取脚本的目录
     xlsx_path = os.path.join(current_directory, "股價N.xlsx")
     print(f"File Path: {xlsx_path}")
+
     with pd.ExcelWriter(xlsx_path, engine='xlsxwriter') as writer:
-        d2 = pd.DataFrame([[str(exec_time), '', ''], title], columns=title)
-        df = pd.concat([d2, df[:]]).reset_index(drop=True)
-        df.to_excel(writer, sheet_name='股價N', index=False, header=None)
+        # 製作特殊的置頂表頭 (包含兩邊的欄位)
+        combined_titles = title + title_us
+        d2 = pd.DataFrame([[str(exec_time)] + [''] * (len(combined_titles) - 1), combined_titles], columns=combined_titles)
+
+        # 覆蓋回 df_combined 的欄位名稱，讓它可以被安全 concat
+        df_combined.columns = combined_titles
+        df_final = pd.concat([d2, df_combined]).reset_index(drop=True)
+
+        df_final.to_excel(writer, sheet_name='股價N', index=False, header=None)
 
         # set up format
         workbook  = writer.book
         worksheet = writer.sheets['股價N']
-        format1 = workbook.add_format({'num_format': '#,##0.00'})
-        worksheet.set_column(2, 2, None, format1)  # (from col, to col, cell width, FORMAT)
+        format_price = workbook.add_format({'num_format': '#,##0.00'})
+
+        # 第 C 欄 (台股價格) 套用格式
+        worksheet.set_column(2, 2, None, format_price)
+        # 第 G 欄 (美股價格) 套用格式 (索引為 6)
+        worksheet.set_column(6, 6, None, format_price)
+
         creater_success = True
 
     # get parameter for using drive api if it's exist

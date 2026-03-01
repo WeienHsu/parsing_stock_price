@@ -4,6 +4,7 @@ os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(os.path.dirname(sys.argv[0]), 'c
 import pandas as pd
 import yfinance as yf
 import requests
+from time import time
 from io import StringIO
 from bs4 import BeautifulSoup
 from bs4.dammit import EncodingDetector
@@ -258,50 +259,51 @@ def download_yfinance_from_csv(csv_filename='stock_list.csv'):
 
     print(f"開始透過 yfinance 批次抓取 {len(all_symbols)} 檔美股即時報價...")
 
-    try:
-        # yfinance 支援一次傳入多個代號 (以空白分隔)
-        tickers_string = " ".join(all_symbols)
+    # 為了避免 SQLite database is locked 錯誤以及 yfinance 下載大量檔案時發生 TypeError (Yahoo API 阻擋/解析錯誤)
+    # 我們將所有股票代號進行「分批次下載」(例如每批次 100 檔)，這樣可以大幅減輕 SQLite 併發寫入的壓力。
+    chunk_size = 10
+    for i in range(0, len(all_symbols), chunk_size):
+        chunk_symbols = all_symbols[i:i + chunk_size]
+        try:
+            tickers_string = " ".join(chunk_symbols)
+            # 關閉多執行緒 (threads=False)，雖然下載速度會稍微慢一點，但可以保證不會因為併發寫入而觸發 SQLite locked 或 API 限流
+            hist = yf.download(tickers_string, period="1d", group_by='ticker', threads=False, progress=False)
 
-        # threads=True 啟用多執行緒，速度飛快
-        # progress=False 不顯示下載進度條，讓你的終端機乾淨一點
-        hist = yf.download(tickers_string, period="1d", group_by='ticker', threads=True, progress=False)
-
-        if hist.empty:
-            print("yfinance 回傳空資料！(可能遇到 API 阻擋或無網路)")
-            return data
-
-        for sym in all_symbols:
-            try:
-                # 若只有抓一檔股票 (例如清單被你刪到剩一檔)，yfinance 的回傳結構會不一樣
-                if len(all_symbols) == 1:
-                    latest_data = hist.iloc[-1]
-                else:
-                    # 取出該代號的最新一筆資料
-                    if sym in hist.columns.levels[0]:
-                        latest_data = hist[sym].iloc[-1]
-                    else:
-                        continue
-
-                price = float(latest_data['Close'])
-                volume = float(latest_data['Volume'])
-
-                # 過濾明顯異常沒有價格的資料
-                if pd.isna(price) or price <= 0:
-                    continue
-
-                # 從字典拿取正確的公司名稱
-                stock_name = symbol_map.get(sym, sym)
-
-                # 放入你的統一 array 中 [代號, 名稱, 價格, 成交量]
-                # 第三個是價位，第四個是成交量 (你在抓 Histock 的時候是這樣對應的)
-                data.append([sym, stock_name, price, volume])
-
-            except Exception as e:
-                # 即使某一檔出了小問題 (剛好當天暫停交易等)，靜默跳過，不影響其他幾百檔
+            if hist.empty:
+                print(f"批次 {i+1}~{i+len(chunk_symbols)} 回傳空資料！(可能遇到 API 阻擋或無網路)")
                 continue
 
-    except Exception as e:
-        print(f"yfinance 批次下載報價發生嚴重錯誤: {e}")
+            for sym in chunk_symbols:
+                try:
+                    # 若只有抓一檔股票，yfinance 的回傳結構會不一樣
+                    if len(chunk_symbols) == 1:
+                        latest_data = hist.iloc[-1]
+                    else:
+                        # 取出該代號的最新一筆資料
+                        if sym in hist.columns.levels[0]:
+                            latest_data = hist[sym].iloc[-1]
+                        else:
+                            continue
+
+                    price = float(latest_data['Close'])
+                    volume = float(latest_data['Volume'])
+
+                    # 過濾明顯異常沒有價格的資料
+                    if pd.isna(price) or price <= 0:
+                        continue
+
+                    # 從字典拿取正確的公司名稱
+                    stock_name = symbol_map.get(sym, sym)
+
+                    # 放入你的統一 array 中 [代號, 名稱, 價格, 成交量]
+                    data.append([sym, stock_name, price, volume])
+
+                except Exception as e:
+                    # 即使某一檔出了小問題，靜默跳過，不影響其他
+                    continue
+
+        except Exception as e:
+            print(f"yfinance 批次下載報價發生嚴重錯誤 ({i+1}~{i+len(chunk_symbols)}): {e}")
 
     print(f"美股報價抓取完成！成功取得 {len(data)} 檔報價。")
     return data
@@ -389,6 +391,7 @@ if __name__ == '__main__':
     data_tw = []
 
     # ======== 1. 收集台股資料 ========
+    tw_time = time()
     rows, title = downloadHistock()
     for row in rows[1:]:
         item = [x.text.strip() for x in row.find_all('td')]
@@ -403,16 +406,17 @@ if __name__ == '__main__':
 
     resultTPEX = downloadByCSVUrl_tpex(url="https://www.tpex.org.tw/www/zh-tw/afterTrading/fixPricing?date={}&id=&response=csv")
     data_tw.extend(resultTPEX)
-    print(f" ==== Taiwan Total count: {len(data_tw)} ====")
+    print(f" ==== Taiwan Total count: {len(data_tw)} (cost time: {time()-tw_time:.2f}s)===")
 
     # 將台股轉為 DataFrame 並去重
     df_tw = pd.DataFrame(data_tw, columns=title)
     df_tw = df_tw.drop_duplicates(subset='代號').reset_index(drop=True)
 
     # ======== 2. 收集美股資料 ========
+    us_time = time()
     # 呼叫美股抓取函式
     resultUS = download_yfinance_from_csv('stock_list.csv')
-    print(f" ==== US Total count: {len(resultUS)} ====")
+    print(f" ==== US Total count: {len(resultUS)} (cost time: {time()-us_time:.2f}s)====")
 
     # 將美股轉為 DataFrame
     title_us = ['美股代號', '美股名稱', '美股價格', '美股成交量']

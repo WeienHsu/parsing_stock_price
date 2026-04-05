@@ -1,0 +1,5 @@
+*.xlsx
+*.json
+.venv/*
+.DS_Store
+.env

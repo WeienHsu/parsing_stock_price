@@ -99,9 +99,9 @@ def downloadByCSVUrl(url):
 
     data = []
     try:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        # urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         session = requests.Session()
-        response = session.get(url, headers=headers, timeout=30, verify=False)
+        response = session.get(url, headers=headers, timeout=30)
         response.encoding = 'utf-8'
         if response.status_code == 200:
             csv_content = response.content.decode('utf-8')
@@ -133,9 +133,9 @@ def downloadByCSVUrl_tpex(url):
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
     }
     # response = requests.get(url, headers=headers)
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     session = requests.Session()
-    response = session.get(url, headers=headers, timeout=30, verify=False)
+    response = session.get(url, headers=headers, timeout=30)
     data = []
     if response.status_code == 200:
         df = pd.read_csv(StringIO(response.text), sep=',', quotechar='"', skipinitialspace=True, skiprows=2)
@@ -322,7 +322,6 @@ def authenticate(cred_name):
     # create new certificate 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            print(creds, creds.expired, creds.refresh_token)
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(f'{cred_name}.json', SCOPES)

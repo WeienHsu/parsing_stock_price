@@ -275,15 +275,11 @@ def download_yfinance_from_csv(csv_filename='stock_list.csv'):
 
             for sym in chunk_symbols:
                 try:
-                    # 若只有抓一檔股票，yfinance 的回傳結構會不一樣
-                    if len(chunk_symbols) == 1:
-                        latest_data = hist.iloc[-1]
+                    # 取出該代號的最新一筆資料 (即使只下載一檔，group_by='ticker' 仍會回傳 MultiIndex 欄位)
+                    if sym in hist.columns.levels[0]:
+                        latest_data = hist[sym].iloc[-1]
                     else:
-                        # 取出該代號的最新一筆資料
-                        if sym in hist.columns.levels[0]:
-                            latest_data = hist[sym].iloc[-1]
-                        else:
-                            continue
+                        continue
 
                     price = float(latest_data['Close'])
                     volume = float(latest_data['Volume'])
